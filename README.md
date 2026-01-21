@@ -15,7 +15,7 @@ It provides a simpler API on top of `net/http` while keeping Go’s explicitness
 ## Installation
 
 ```bash
-go get github.com/yourusername/request
+go get github.com/barkhayot/request
 ```
 
 ## Usage
