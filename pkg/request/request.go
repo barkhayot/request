@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/barkhayot/request/pkg/throttler"
 )
 
 const (
@@ -34,6 +36,8 @@ type Config struct {
 	Endpoint       string
 	Method         string
 	Timeout        time.Duration
+
+	Throttler throttler.Throttler
 }
 
 type Options func(*Config)
@@ -77,6 +81,12 @@ func WithHeaders(h http.Header) Options {
 func WithQueryParams(q url.Values) Options {
 	return func(c *Config) {
 		c.QueryParams = q
+	}
+}
+
+func WithThrottler(t throttler.Throttler) Options {
+	return func(c *Config) {
+		c.Throttler = t
 	}
 }
 
@@ -127,6 +137,12 @@ func requestRaw(ctx context.Context, cfg Config) (*http.Response, error) {
 
 	if cfg.BodyMarshalled != nil {
 		body = bytes.NewReader(cfg.BodyMarshalled)
+	}
+
+	if cfg.Throttler != nil {
+		if err := cfg.Throttler.Wait(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	u, err := url.Parse(cfg.Endpoint)
