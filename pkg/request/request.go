@@ -38,6 +38,7 @@ type Config struct {
 	Timeout        time.Duration
 
 	Throttler throttler.Throttler
+	Proxy     string
 }
 
 type Options func(*Config)
@@ -87,6 +88,12 @@ func WithQueryParams(q url.Values) Options {
 func WithThrottler(t throttler.Throttler) Options {
 	return func(c *Config) {
 		c.Throttler = t
+	}
+}
+
+func WithProxy(proxy string) Options {
+	return func(c *Config) {
+		c.Proxy = proxy
 	}
 }
 
@@ -175,6 +182,16 @@ func requestRaw(ctx context.Context, cfg Config) (*http.Response, error) {
 
 	client := &http.Client{
 		Timeout: cfg.Timeout,
+	}
+
+	if cfg.Proxy != "" {
+		proxyURL, err := validateProxy(cfg.Proxy)
+		if err != nil {
+			return nil, err
+		}
+		client.Transport = &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		}
 	}
 
 	return client.Do(req)
