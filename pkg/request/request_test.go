@@ -170,3 +170,24 @@ func TestRequest_ContextCancelled(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestRequestRaw_ProxyUsed(t *testing.T) {
+	target := "http://example.com/ok"
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI != target {
+			t.Fatalf("expected proxy request URI %s, got %s", target, r.RequestURI)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+
+	_, err := RequestRaw(context.Background(),
+		WithEndpoint(target),
+		WithProxy(proxy.URL),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
