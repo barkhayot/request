@@ -101,14 +101,7 @@ if err != nil {
 -   Internals are unexported to keep the public API small
 
 ### Examples
-
-Runnable examples are available in the `examples/` directory:
-
-```bash
-go run ./examples/get
-go run ./examples/post_json
-go run ./examples/raw
-```
+Runnable examples are available in the `examples/` directory
 
 ## License
 MIT License. See `LICENSE` file for details.
