@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/barkhayot/request/pkg/throttler"
+	"github.com/andybalholm/brotli"
 )
 
 const (
@@ -99,7 +100,6 @@ func WithProxy(proxy string) Options {
 
 func Request[T any](ctx context.Context, opts ...Options) (T, error) {
 	var out T
-
 	resp, err := requestRaw(ctx, newConfig(opts))
 	if err != nil {
 		return out, err
@@ -111,7 +111,14 @@ func Request[T any](ctx context.Context, opts ...Options) (T, error) {
 		return out, fmt.Errorf("http %d: %s", resp.StatusCode, string(b))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// Handle Brotli decompression
+	// TODO: extend it later
+	var reader io.Reader = resp.Body
+	if resp.Header.Get("Content-Encoding") == "br" {
+		reader = brotli.NewReader(resp.Body)
+	}
+
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return out, err
 	}
