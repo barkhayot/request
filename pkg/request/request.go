@@ -25,6 +25,7 @@ var (
 		"POST":   {},
 		"PUT":    {},
 		"PATCH":  {},
+		"QUERY":  {},
 		"DELETE": {},
 	}
 )
