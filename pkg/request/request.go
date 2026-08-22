@@ -11,22 +11,48 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/barkhayot/request/pkg/throttler"
 	"github.com/andybalholm/brotli"
+	"github.com/barkhayot/request/pkg/throttler"
 )
 
 const (
 	defaultTimeout = 2 * time.Second
 )
 
+type Method string
+
+const (
+	MethodGet    Method = "GET"
+	MethodPost   Method = "POST"
+	MethodPut    Method = "PUT"
+	MethodPatch  Method = "PATCH"
+	MethodDelete Method = "DELETE"
+	MethodQuery  Method = "QUERY"
+)
+
+// methodInfo describes the semantics we care about when building a request.
+// bodyIsData marks methods whose body is the semantic payload rather than an
+// oddity, which is what separates QUERY from GET.
+type methodInfo struct {
+	safe       bool
+	idempotent bool
+	bodyIsData bool
+}
+
+// safeWithBody reports whether a redirect may not drop the request body
+// without changing what the request means.
+func (m methodInfo) safeWithBody() bool {
+	return m.safe && m.bodyIsData
+}
+
 var (
-	methods = map[string]struct{}{
-		"GET":    {},
-		"POST":   {},
-		"PUT":    {},
-		"PATCH":  {},
-		"QUERY":  {},
-		"DELETE": {},
+	methods = map[Method]methodInfo{
+		MethodGet:    {safe: true, idempotent: true},
+		MethodPost:   {bodyIsData: true},
+		MethodPut:    {idempotent: true, bodyIsData: true},
+		MethodPatch:  {bodyIsData: true},
+		MethodDelete: {idempotent: true},
+		MethodQuery:  {safe: true, idempotent: true, bodyIsData: true},
 	}
 )
 
@@ -36,7 +62,7 @@ type Config struct {
 	Headers        http.Header
 	QueryParams    url.Values
 	Endpoint       string
-	Method         string
+	Method         Method
 	Timeout        time.Duration
 
 	Throttler throttler.Throttler
@@ -57,7 +83,7 @@ func WithEndpoint(e string) Options {
 	}
 }
 
-func WithMethod(m string) Options {
+func WithMethod(m Method) Options {
 	return func(c *Config) {
 		c.Method = m
 	}
@@ -169,11 +195,12 @@ func requestRaw(ctx context.Context, cfg Config) (*http.Response, error) {
 		u.RawQuery = cfg.QueryParams.Encode()
 	}
 
-	if _, ok := methods[cfg.Method]; !ok {
+	info, ok := methods[cfg.Method]
+	if !ok {
 		return nil, fmt.Errorf("invalid method: %s", cfg.Method)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, cfg.Method, u.String(), body)
+	req, err := http.NewRequestWithContext(ctx, string(cfg.Method), u.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +219,23 @@ func requestRaw(ctx context.Context, cfg Config) (*http.Response, error) {
 		Timeout: cfg.Timeout,
 	}
 
+	// net/http rewrites any non-GET/HEAD method to GET and drops the body on
+	// 301, 302 and 303. For a safe method whose body *is* the request, that
+	// silently turns a query into a bare GET, so hand those responses back to
+	// the caller instead. 303 genuinely means "GET this other resource", and
+	// 307/308 preserve the method and replay the body, so both still follow.
+	if info.safeWithBody() {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if resp := req.Response; resp != nil {
+				switch resp.StatusCode {
+				case http.StatusMovedPermanently, http.StatusFound:
+					return http.ErrUseLastResponse
+				}
+			}
+			return nil
+		}
+	}
+
 	if cfg.Proxy != "" {
 		proxyURL, err := validateProxy(cfg.Proxy)
 		if err != nil {
@@ -208,7 +252,7 @@ func requestRaw(ctx context.Context, cfg Config) (*http.Response, error) {
 func newConfig(opts []Options) Config {
 	cfg := Config{
 		Timeout: defaultTimeout,
-		Method:  "GET",
+		Method:  MethodGet,
 		Headers: make(http.Header),
 	}
 

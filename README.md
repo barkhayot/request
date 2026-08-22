@@ -77,6 +77,27 @@ if err != nil {
 }
 ```
 
+#### QUERY request
+
+`QUERY` is safe and idempotent like `GET`, but the request body carries the query
+itself — useful for searches too large or too structured for the URL.
+
+```go
+resp, err := request.Request[Response](
+	ctx,
+	request.WithEndpoint("https://api.example.com/search"),
+	request.WithMethod(request.MethodQuery),
+	request.WithBody(map[string]any{"select": "name"}),
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+Methods are available as typed constants — `request.MethodGet`, `MethodPost`,
+`MethodPut`, `MethodPatch`, `MethodDelete`, `MethodQuery`. Plain string literals
+such as `request.WithMethod("GET")` still work.
+
 #### Raw Requests
 ```go
 resp, err := request.RequestRaw(
@@ -99,6 +120,10 @@ if err != nil {
 -   The library avoids hidden magic and keeps behavior explicit
 -   net/http primitives are preserved where possible
 -   Internals are unexported to keep the public API small
+-   For safe body-carrying methods (`QUERY`), `301`/`302` responses are returned
+    to the caller rather than auto-followed, because `net/http` would rewrite
+    them to a bodiless `GET` and silently change the request's meaning. `303`
+    (which means "`GET` this other resource") and `307`/`308` are still followed
 
 ### Examples
 Runnable examples are available in the `examples/` directory
