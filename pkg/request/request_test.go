@@ -3,6 +3,7 @@ package request
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -168,6 +169,205 @@ func TestRequest_ContextCancelled(t *testing.T) {
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestMethods_QuerySemantics(t *testing.T) {
+	info, ok := methods[MethodQuery]
+	if !ok {
+		t.Fatal("QUERY not registered")
+	}
+
+	if !info.safe || !info.idempotent || !info.bodyIsData {
+		t.Fatalf("QUERY must be safe, idempotent and body-carrying, got %+v", info)
+	}
+
+	if !info.safeWithBody() {
+		t.Fatal("expected QUERY to be safe-with-body")
+	}
+
+	if methods[MethodGet].safeWithBody() {
+		t.Fatal("GET must not be treated as safe-with-body")
+	}
+
+	if methods[MethodPost].safeWithBody() {
+		t.Fatal("POST must not be treated as safe-with-body")
+	}
+}
+
+func TestRequestRaw_QueryMethod(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != string(MethodQuery) {
+			t.Errorf("expected QUERY, got %s", r.Method)
+		}
+
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected json content type, got %q", ct)
+		}
+
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading body: %v", err)
+		}
+
+		if string(b) != `{"select":"name"}` {
+			t.Errorf("unexpected body: %s", b)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message":"ok"}`))
+	}))
+	defer srv.Close()
+
+	type Resp struct {
+		Message string `json:"message"`
+	}
+
+	resp, err := Request[Resp](context.Background(),
+		WithEndpoint(srv.URL),
+		WithMethod(MethodQuery),
+		WithBodyMarshalled([]byte(`{"select":"name"}`)),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Message != "ok" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+// A 302 must not be auto-followed for QUERY: net/http would rewrite it to a
+// bodiless GET, which asks the server a completely different question.
+func TestRequestRaw_QueryNotDowngradedOnFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/final", http.StatusFound)
+		default:
+			t.Errorf("redirect should not have been followed, got %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := RequestRaw(context.Background(),
+		WithEndpoint(srv.URL),
+		WithMethod(MethodQuery),
+		WithBodyMarshalled([]byte(`{"select":"name"}`)),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected the 302 to be handed back, got %d", resp.StatusCode)
+	}
+}
+
+// 303 means "GET this other resource", so it is still followed.
+func TestRequestRaw_QueryFollowsSeeOther(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/final", http.StatusSeeOther)
+		default:
+			if r.Method != http.MethodGet {
+				t.Errorf("expected GET after 303, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := RequestRaw(context.Background(),
+		WithEndpoint(srv.URL),
+		WithMethod(MethodQuery),
+		WithBodyMarshalled([]byte(`{"select":"name"}`)),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 303 to be followed, got %d", resp.StatusCode)
+	}
+}
+
+// 307 preserves the method, and the body is replayed from GetBody.
+func TestRequestRaw_QueryFollowsTemporaryRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/final", http.StatusTemporaryRedirect)
+		default:
+			if r.Method != string(MethodQuery) {
+				t.Errorf("expected QUERY to survive 307, got %s", r.Method)
+			}
+
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("reading body: %v", err)
+			}
+
+			if string(b) != `{"select":"name"}` {
+				t.Errorf("body not replayed, got %q", b)
+			}
+
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := RequestRaw(context.Background(),
+		WithEndpoint(srv.URL),
+		WithMethod(MethodQuery),
+		WithBodyMarshalled([]byte(`{"select":"name"}`)),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 307 to be followed, got %d", resp.StatusCode)
+	}
+}
+
+// The redirect guard is scoped to safe-with-body methods; POST keeps net/http's
+// existing rewrite-to-GET behaviour.
+func TestRequestRaw_PostStillFollowsFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/final", http.StatusFound)
+		default:
+			if r.Method != http.MethodGet {
+				t.Errorf("expected GET after 302, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := RequestRaw(context.Background(),
+		WithEndpoint(srv.URL),
+		WithMethod(MethodPost),
+		WithBodyMarshalled([]byte(`{"a":"b"}`)),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 302 to be followed, got %d", resp.StatusCode)
 	}
 }
 
